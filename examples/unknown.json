@@ -1,0 +1,10 @@
+{
+  "Resources": {
+    "FutureResource": {"Type": "Example::Service::FutureResource"},
+    "Bucket": {
+      "Type": "AWS::S3::Bucket",
+      "DependsOn": "FutureResource",
+      "Properties": {"BucketName": {"Ref": "ExternalName"}}
+    }
+  }
+}

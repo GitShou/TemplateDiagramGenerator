@@ -1,0 +1,19 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  Network:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.72.0.0/16
+  AuditTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions: [{AttributeName: id, AttributeType: S}]
+      KeySchema: [{AttributeName: id, KeyType: HASH}]
+Outputs:
+  SharedVpc:
+    Value: !Ref Network
+    Export: {Name: !Sub '${AWS::StackName}-Vpc'}
+  AuditTableName:
+    Value: !Ref AuditTable
+    Export: {Name: !Sub '${AWS::StackName}-AuditTable'}

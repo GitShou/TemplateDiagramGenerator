@@ -1,0 +1,23 @@
+version: 1
+input:
+  roots:
+    - id: web
+      template: web.yaml
+      parameters:
+        Mode: full
+    - id: api
+      template: api.yaml
+    - id: events
+      template: events.yaml
+  nested_stack_paths:
+    web/Application: stacks/application.yaml
+views:
+  locale: ja
+  overview:
+    max_nodes: 20
+    direction: LR
+  detail:
+    show_network_boundaries: true
+output:
+  directory: diagram-output
+  formats: [html, svg, json, dot]

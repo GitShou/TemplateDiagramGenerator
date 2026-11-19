@@ -1,0 +1,46 @@
+.venv/
+__pycache__/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+build/
+dist/
+diagram-output/
+
+# Local infrastructure inputs and reports
+/reports/
+
+# Local credentials and private keys
+.env
+.env.*
+.aws/
+credentials
+credentials.json
+*.pem
+*.key
+*.p12
+*.pfx
+*.ppk
+id_dsa
+id_ecdsa
+id_ed25519
+id_rsa
+
+# Local Terraform data
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+*.tfplan
+crash.log
+crash.*.log
+
+# Local editor, OS, and coverage files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.coverage
+.coverage.*
+htmlcov/

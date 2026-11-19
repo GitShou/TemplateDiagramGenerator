@@ -1,0 +1,48 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Parameters:
+  Mode:
+    Type: String
+    Default: static
+    AllowedValues: [static, full]
+Conditions:
+  WithApplication: !Equals [!Ref Mode, full]
+Resources:
+  SiteBucket:
+    Type: AWS::S3::Bucket
+  UnusedBucket:
+    Type: AWS::S3::Bucket
+  Application:
+    Type: AWS::CloudFormation::Stack
+    Condition: WithApplication
+    Properties:
+      TemplateURL: https://s3.example.invalid/templates/application.yaml
+  CDN:
+    Type: AWS::CloudFront::Distribution
+    Properties:
+      DistributionConfig:
+        Enabled: true
+        Origins:
+          - Id: static
+            DomainName: !GetAtt SiteBucket.RegionalDomainName
+            S3OriginConfig: {OriginAccessIdentity: ''}
+          - Id: unused
+            DomainName: !GetAtt UnusedBucket.RegionalDomainName
+            S3OriginConfig: {OriginAccessIdentity: ''}
+          - !If
+            - WithApplication
+            - Id: application
+              DomainName: !GetAtt Application.Outputs.LoadBalancerDnsName
+              CustomOriginConfig: {OriginProtocolPolicy: http-only}
+            - !Ref AWS::NoValue
+        DefaultCacheBehavior:
+          TargetOriginId: static
+          ViewerProtocolPolicy: redirect-to-https
+          CachePolicyId: 658327ea-f89d-4fab-a63d-7e88639e58f6
+        CacheBehaviors:
+          - !If
+            - WithApplication
+            - TargetOriginId: application
+              PathPattern: /app/*
+              ViewerProtocolPolicy: redirect-to-https
+              CachePolicyId: 4135ea2d-6df8-44a3-9df3-4b5a84be39ad
+            - !Ref AWS::NoValue

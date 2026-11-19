@@ -1,0 +1,15 @@
+version: 1
+input:
+  roots:
+    - id: storefront
+      terraform: .
+views:
+  locale: ja
+  resources:
+    'storefront/storage#aws_s3_bucket.site': {label: 静的サイト}
+    'storefront#aws_s3_bucket.fallback': {label: 障害用サイト}
+    'storefront#aws_cloudfront_distribution.site': {label: サイト配信}
+    'storefront#aws_lambda_function.worker': {label: 日次処理}
+    'storefront#aws_scheduler_schedule.daily': {label: 日次スケジュール}
+output:
+  formats: [html, svg, dot, json]

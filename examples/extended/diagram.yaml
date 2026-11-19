@@ -1,0 +1,40 @@
+version: 1
+input:
+  roots:
+    - id: foundation
+      template: foundation.yaml
+      account_id: '123456789012'
+      region: ap-northeast-1
+      stack_name: ExampleFoundation
+    - id: orders
+      template: orders.yaml
+      account_id: '123456789012'
+      region: ap-northeast-1
+views:
+  locale: ja
+  resources:
+    'orders#OrdersApi':
+      label: 注文 API
+    'orders#OrdersMethod':
+      label: 注文受付メソッド
+    'orders#Function':
+      label: 注文処理
+    'orders#OrdersDns':
+      label: 注文 DNS レコード
+    'orders#OrdersDomain':
+      label: 注文 API ドメイン
+    'orders#Workflow':
+      label: 監査ワークフロー
+    'orders#SpareBucket':
+      overview: hidden
+    'foundation#AuditTable':
+      label: 監査テーブル
+      overview: primary
+relationships:
+  - source: 'orders#Function'
+    target: 'foundation#AuditTable'
+    type: DATA_ACCESS
+    evidence: 架空の運用仕様では注文処理が監査テーブルへ結果を書き込む。
+output:
+  directory: diagram-output
+  formats: [html, svg, json, dot]

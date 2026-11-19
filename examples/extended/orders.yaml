@@ -1,0 +1,75 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Resources:
+  OrdersSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !ImportValue ExampleFoundation-Vpc
+      CidrBlock: 10.72.1.0/24
+  SpareBucket:
+    Type: AWS::S3::Bucket
+  OrdersApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties: {Name: example-orders}
+  OrdersMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref OrdersApi
+      ResourceId: !GetAtt OrdersApi.RootResourceId
+      HttpMethod: POST
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 'arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${Function.Arn}/invocations'
+  Function:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt FunctionRole.Arn
+      Code:
+        ZipFile: |
+          def handler(event, context):
+              return {"statusCode": 200, "body": "{}"}
+  FunctionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: [{Effect: Allow, Principal: {Service: lambda.amazonaws.com}, Action: 'sts:AssumeRole'}]
+  Workflow:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      RoleArn: !GetAtt WorkflowRole.Arn
+      Definition:
+        StartAt: SaveAudit
+        States:
+          SaveAudit:
+            Type: Task
+            Resource: !Sub 'arn:${AWS::Partition}:states:::dynamodb:putItem'
+            Parameters:
+              TableName: !ImportValue ExampleFoundation-AuditTable
+              Item:
+                id: {S: example}
+            End: true
+  WorkflowRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement: [{Effect: Allow, Principal: {Service: states.amazonaws.com}, Action: 'sts:AssumeRole'}]
+  OrdersDomain:
+    Type: AWS::ApiGateway::DomainName
+    Properties:
+      DomainName: orders.example.invalid
+      EndpointConfiguration: {Types: [REGIONAL]}
+      RegionalCertificateArn: arn:aws:acm:ap-northeast-1:123456789012:certificate/00000000-0000-0000-0000-000000000000
+  OrdersDns:
+    Type: AWS::Route53::RecordSet
+    Properties:
+      Name: orders.example.invalid
+      HostedZoneName: example.invalid.
+      Type: A
+      AliasTarget:
+        DNSName: !GetAtt OrdersDomain.RegionalDomainName
+        HostedZoneId: !GetAtt OrdersDomain.RegionalHostedZoneId
