@@ -149,6 +149,24 @@ def _associate(ctx, resource, prop, types, attributes) -> None:
     ctx.add("network.association", EdgeKind.ASSOCIATION, resource, target, prop)
 
 
+def lambda_vpc(ctx: RuleContext, resource) -> None:
+    vpc = Property.root(resource).get("VpcConfig")
+    for prop in vpc.get("SubnetIds").entries():
+        _associate(ctx, resource, prop, {SUBNET}, {"SubnetId", None})
+    for prop in vpc.get("SecurityGroupIds").entries():
+        _associate(ctx, resource, prop, {SECURITY_GROUP}, {"GroupId", None})
+
+
+def ec2_network(ctx: RuleContext, resource) -> None:
+    props = Property.root(resource)
+    attachments = (props, *props.get("NetworkInterfaces").entries())
+    for attachment in attachments:
+        _associate(ctx, resource, attachment.get("SubnetId"), {SUBNET}, {"SubnetId", None})
+        group_key = "SecurityGroupIds" if attachment is props else "GroupSet"
+        for group in attachment.get(group_key).entries():
+            _associate(ctx, resource, group, {SECURITY_GROUP}, {"GroupId", None})
+
+
 def vpc_scoped(ctx: RuleContext, resource) -> None:
     vpc = Property.root(resource).get("VpcId")
     if vpc.value is None:

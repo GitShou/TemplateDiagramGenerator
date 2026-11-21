@@ -35,6 +35,7 @@ class Config:
     directory: Path
     formats: tuple[str, ...]
     relationships: tuple[ManualRelationship, ...] = ()
+    localize_json_diagnostics: bool = False
 
 
 def _object(node: AstNode | None, section: str, *keys: str) -> dict[str, AstNode]:
@@ -245,12 +246,26 @@ def load_config(path: Path) -> Config:
     if locale not in REPORT_LOCALES:
         raise ConfigError("views.locale must be en or ja.")
     overview = _object(
-        views.get("overview"), "views.overview", "max_nodes", "direction", "show_conditional"
+        views.get("overview"),
+        "views.overview",
+        "max_nodes",
+        "direction",
+        "show_conditional",
+        "selection",
     )
-    detail = _object(views.get("detail"), "views.detail", "max_nodes", "show_network_boundaries")
+    detail = _object(
+        views.get("detail"),
+        "views.detail",
+        "max_nodes",
+        "show_network_boundaries",
+        "show_conditional",
+    )
     direction = _text(overview.get("direction"), "views.overview.direction", "LR")
     if direction not in {"LR", "TB"}:
         raise ConfigError("views.overview.direction must be LR or TB.")
+    selection = _text(overview.get("selection"), "views.overview.selection", "auto")
+    if selection not in {"auto", "primary"}:
+        raise ConfigError("views.overview.selection must be auto or primary.")
     view_options = ViewOptions(
         _limit(overview.get("max_nodes"), "views.overview.max_nodes", 20),
         _limit(detail.get("max_nodes"), "views.detail.max_nodes", 40),
@@ -259,8 +274,14 @@ def load_config(path: Path) -> Config:
         _flag(detail.get("show_network_boundaries"), "views.detail.show_network_boundaries", True),
         _resource_views(views.get("resources")),
         locale=locale,
+        overview_selection=selection,
+        detail_show_conditional=_flag(
+            detail.get("show_conditional"), "views.detail.show_conditional", True
+        ),
     )
-    out = _object(fields.get("output"), "output", "directory", "formats")
+    out = _object(
+        fields.get("output"), "output", "directory", "formats", "localize_json_diagnostics"
+    )
     return Config(
         roots,
         ResolveOptions(
@@ -270,18 +291,35 @@ def load_config(path: Path) -> Config:
         directory / _text(out.get("directory"), "output.directory", "diagram-output"),
         _formats(out.get("formats")),
         _relationships(fields.get("relationships")),
+        _flag(out.get("localize_json_diagnostics"), "output.localize_json_diagnostics", False),
     )
 
 
-def direct_config(templates: list[Path], directory: Path, *, terraform: bool = False) -> Config:
+def direct_config(
+    templates: list[Path],
+    directory: Path,
+    *,
+    terraform: bool = False,
+    input_base: Path | None = None,
+) -> Config:
+    paths = [(directory / path).resolve() for path in templates]
+    locations = [path if terraform and path.is_dir() else path.parent for path in paths]
+    base = directory.resolve()
+    if input_base is not None:
+        base = (directory / input_base).resolve()
+    elif not all(path.is_relative_to(base) for path in locations):
+        if len(set(locations)) != 1:
+            raise ConfigError(
+                "Use --input-base for direct inputs in different locations outside the working directory."
+            )
+        base = locations[0]
     if terraform:
-        paths = [(directory / path).resolve() for path in templates]
         roots = tuple(
             TerraformInput(path.parent.name if path.is_file() else path.name, path)
             for path in paths
         )
     else:
-        roots = tuple(RootInput(path.stem, path) for path in templates)
+        roots = tuple(RootInput(path.stem, path) for path in paths)
     if len({root.id for root in roots}) != len(roots) or any(
         not ROOT_ID.fullmatch(root.id) for root in roots
     ):
@@ -290,7 +328,7 @@ def direct_config(templates: list[Path], directory: Path, *, terraform: bool = F
         )
     return Config(
         roots,
-        ResolveOptions(directory),
+        ResolveOptions(base),
         ViewOptions(),
         directory / "diagram-output",
         DEFAULT_FORMATS,

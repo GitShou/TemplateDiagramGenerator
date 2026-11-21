@@ -18,8 +18,9 @@ from ..architecture import (
 )
 from ..dependency import dependency_cycles, dependency_references, stack_references
 from ..models import ConditionState, Diagnostic, Resource, ResourceGraph, conjunction, pointer
-from . import dns, events, network, routing, workflows
+from . import dns, events, monitoring, network, routing, workflows
 from .context import (
+    ALARM,
     ALB,
     API,
     BUCKET,
@@ -27,6 +28,7 @@ from .context import (
     DB_SUBNET_GROUP,
     DNS_RECORD,
     DNS_RECORD_GROUP,
+    EC2,
     ECS,
     ECS_CLUSTER,
     ECS_TASK,
@@ -61,6 +63,7 @@ PRIMARY = {
     API,
     BUCKET,
     CLOUDFRONT,
+    EC2,
     ECS,
     EVENT_BUS,
     EVENT_RULE,
@@ -131,6 +134,10 @@ DEFAULT_RULES = (
     Rule(EVENT_RULE, events.eventbridge),
     Rule(SCHEDULE, events.scheduler),
     Rule(EVENT_MAPPING, events.event_mapping),
+    Rule(LAMBDA, events.sam_events),
+    Rule(LAMBDA, network.lambda_vpc),
+    Rule(EC2, network.ec2_network),
+    Rule(ALARM, monitoring.metric_alarm),
     Rule(SUBNET, network.subnet),
     Rule(ALB, network.workload),
     Rule(ECS, network.workload),

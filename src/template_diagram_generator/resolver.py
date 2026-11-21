@@ -1,6 +1,7 @@
 """Resolve stack-local symbols and explicitly mapped nested templates offline."""
 
 import hashlib
+import ipaddress
 import json
 import re
 from collections.abc import Callable
@@ -46,6 +47,12 @@ _PSEUDO_PARAMETERS = frozenset(
 )
 _STACK_TYPE = "AWS::CloudFormation::Stack"
 _LANGUAGE_EXTENSIONS = "AWS::LanguageExtensions"
+_SAM = "AWS::Serverless-2016-10-31"
+_SAM_TYPES = {
+    "AWS::Serverless::Function": ("AWS::Lambda::Function", "Function"),
+    "AWS::Serverless::Api": ("AWS::ApiGateway::RestApi", "Api"),
+    "AWS::Serverless::HttpApi": ("AWS::ApiGatewayV2::Api", "HttpApi"),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,6 +88,7 @@ class _Scope:
     root_input: RootInput | None = None
     parent_parameters: AstNode | None = None
     omitted_declarations: tuple[AstNode, ...] = ()
+    sam_globals: dict[str, AstNode] | None = None
 
 
 def resolve(
@@ -94,6 +102,28 @@ def resolve(
 
 def _mapping(node: AstNode | None) -> dict[str, AstNode]:
     return (node.mapping() or {}) if node is not None else {}
+
+
+def _merge_sam_properties(defaults: AstNode, local: AstNode) -> AstNode:
+    base, overrides = defaults.mapping(), local.mapping()
+    if base is not None and overrides is not None:
+        # A mapping that represents an intrinsic is a single expression.
+        if any(
+            key in {"Ref", "Condition"} or key.startswith("Fn::") for key in (*base, *overrides)
+        ):
+            return local
+        return AstNode(
+            base
+            | {
+                key: _merge_sam_properties(base[key], value) if key in base else value
+                for key, value in overrides.items()
+            },
+            local.source,
+        )
+    before, after = defaults.sequence(), local.sequence()
+    if before is not None and after is not None:
+        return AstNode((*before, *after), local.source)
+    return local
 
 
 def _type_of(resource: AstNode) -> str | None:
@@ -228,7 +258,7 @@ class _Resolver:
                 else (transform.value,)
             )
         )
-        opaque = any(name != _LANGUAGE_EXTENSIONS for name in names)
+        opaque = any(name not in (_LANGUAGE_EXTENSIONS, _SAM) for name in names)
         if opaque:
             self.issue(
                 "UNSUPPORTED_TRANSFORM",
@@ -254,7 +284,7 @@ class _Resolver:
             (*parent.ancestors, path) if parent else (path,),
             state,
             _LANGUAGE_EXTENSIONS in names,
-            opaque,
+            opaque or _SAM in names,
             sections["Parameters"],
             sections["Mappings"],
             sections["Conditions"],
@@ -262,6 +292,7 @@ class _Resolver:
             sections["Outputs"],
             root_input,
             parent_parameters,
+            sam_globals=_mapping(root.get("Globals")) if _SAM in names else None,
         )
         self.scopes[stack_id] = scope
         expander = LoopExpander(self.evaluator, max_expanded_nodes=self.options.max_expanded_nodes)
@@ -325,6 +356,12 @@ class _Resolver:
             return
         members = _mapping(node)
         properties = members.get("Properties", AstNode({}, node.source))
+        input_type = None
+        if scope.sam_globals is not None and type_ in _SAM_TYPES:
+            input_type = type_
+            type_, section = _SAM_TYPES[type_]
+            if defaults := scope.sam_globals.get(section):
+                properties = _merge_sam_properties(defaults, properties)
         evaluated = self.evaluator.evaluate(properties, site.child("Properties"))
         if properties.mapping() is None:
             self.issue(
@@ -350,7 +387,7 @@ class _Resolver:
                         item.source,
                     )
         self.resources[id_] = Resource(
-            id_, scope.id, name, type_, node.source, state, properties, evaluated
+            id_, scope.id, name, type_, node.source, state, properties, evaluated, input_type
         )
 
     @staticmethod
@@ -988,6 +1025,31 @@ class _Resolver:
                 return resource_id, ResolvedValue(
                     ValueKind.UNKNOWN, state=state, reason="UNRESOLVED_NESTED_OUTPUT"
                 )
+            if attribute == "CidrBlock" and _type_of(declaration) == "AWS::EC2::VPC":
+                block = _mapping(_mapping(declaration).get("Properties")).get("CidrBlock")
+                if block is not None:
+                    block_site = EvaluationSite(
+                        scope.id, resource_id, ("Resources", name, "Properties", "CidrBlock"), state
+                    )
+                    value = self._memoized(
+                        (scope.id, "vpc_cidr", name),
+                        block_site,
+                        block,
+                        lambda: self.evaluator.evaluate(block, block_site),
+                    )
+                    if value.kind is ValueKind.LITERAL and isinstance(value.value, str):
+                        try:
+                            value = replace(
+                                value, value=str(ipaddress.IPv4Network(value.value, strict=False))
+                            )
+                        except ValueError:
+                            return resource_id, ResolvedValue(
+                                ValueKind.UNKNOWN,
+                                state=value.state,
+                                reference_ids=value.reference_ids,
+                                reason="INVALID_VPC_CIDR",
+                            )
+                    return resource_id, value
             return resource_id, ResolvedValue(
                 ValueKind.RESOURCE_ATTRIBUTE, ResourceAttribute(resource_id, attribute), state
             )

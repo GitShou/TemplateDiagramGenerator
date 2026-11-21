@@ -1,8 +1,19 @@
 """Event delivery described by AWS resource properties."""
 
 from ..architecture import EdgeKind
-from ..models import ConditionState
-from .context import EVENT_BUS, LAMBDA, SNS, SQS, STATE_MACHINE, Property, RuleContext
+from ..models import ConditionState, ValueKind
+from .context import (
+    API,
+    BUCKET,
+    EVENT_BUS,
+    LAMBDA,
+    REST_API,
+    SNS,
+    SQS,
+    STATE_MACHINE,
+    Property,
+    RuleContext,
+)
 from .routing import _enabled
 
 
@@ -76,3 +87,63 @@ def scheduler(ctx: RuleContext, resource) -> None:
         )
         return
     ctx.add("scheduler.target", EdgeKind.EVENT, resource, endpoint, arn, flag, state=state)
+
+
+def sam_events(ctx: RuleContext, function) -> None:
+    if function.input_type != "AWS::Serverless::Function":
+        return
+    events = Property.root(function).get("Events")
+    if events.value is None or events.value.kind is not ValueKind.OBJECT:
+        return
+    for key in sorted(events.value.value):
+        event = events.get(key)
+        type_ = event.get("Type")
+        props = event.get("Properties")
+        kind = type_.literal()
+        if kind in {"Api", "HttpApi"}:
+            field, api_type = ("RestApiId", REST_API) if kind == "Api" else ("ApiId", API)
+            binding = props.get(field)
+            source = ctx.target(binding, {api_type}, {None})
+            if (
+                source is None
+                or source.input_type != f"AWS::Serverless::{kind}"
+                or source.stack_id != function.stack_id
+            ):
+                continue
+            path, method = props.get("Path"), props.get("Method")
+            if kind == "HttpApi" and path.value is None and method.value is None:
+                ctx.add("sam.api_event", EdgeKind.TRAFFIC, source, function, type_, binding)
+            elif (
+                isinstance(path.literal(), str)
+                and path.literal().startswith("/")
+                and isinstance(method.literal(), str)
+                and method.literal()
+            ):
+                ctx.add(
+                    "sam.api_event",
+                    EdgeKind.TRAFFIC,
+                    source,
+                    function,
+                    type_,
+                    binding,
+                    path,
+                    method,
+                )
+        elif kind == "SQS":
+            binding, enabled = props.get("Queue"), props.get("Enabled")
+            if source := ctx.target(binding, {SQS}, {"Arn"}):
+                ctx.add(
+                    "sam.sqs_event",
+                    EdgeKind.EVENT,
+                    source,
+                    function,
+                    type_,
+                    binding,
+                    enabled,
+                    state=_enabled(enabled, ConditionState.TRUE),
+                )
+        elif kind == "S3":
+            binding = props.get("Bucket")
+            source = ctx.target(binding, {BUCKET}, {None})
+            if source is not None and source.stack_id == function.stack_id:
+                ctx.add("sam.s3_event", EdgeKind.EVENT, source, function, type_, binding)

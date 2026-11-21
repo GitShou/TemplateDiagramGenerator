@@ -109,6 +109,14 @@ def test_conditions_can_enable_event_edges_without_claiming_certainty(tmp_path):
         EdgeStatus.CONDITIONAL
     }
     assert not build_views(model).overview[0].edges
+    assert any(
+        edge.status is EdgeStatus.CONDITIONAL
+        for page in build_views(model).detail
+        for edge in page.edges
+    )
+    assert not any(
+        page.edges for page in build_views(model, ViewOptions(detail_show_conditional=False)).detail
+    )
     assert {
         edge.status
         for edge in build_views(model, ViewOptions(show_conditional=True)).overview[0].edges

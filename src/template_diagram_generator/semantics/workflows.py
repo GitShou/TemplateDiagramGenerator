@@ -7,7 +7,7 @@ from dataclasses import replace
 
 from ..architecture import EdgeKind
 from ..expressions import references
-from ..models import ConditionState, ResolvedValue, ValueKind, conjunction
+from ..models import ResolvedValue, ValueKind, conjunction
 from .context import DYNAMODB, Property, RuleContext
 
 _ACTION = re.compile(
@@ -157,17 +157,7 @@ def _table(ctx: RuleContext, field: Property):
     name = field.literal()
     if not isinstance(name, str) or not _TABLE_NAME.fullmatch(name):
         return None, None
-    matches = []
-    for candidate in ctx.resources(DYNAMODB):
-        if (
-            candidate.stack_id != field.resource.stack_id
-            or candidate.condition_state is ConditionState.FALSE
-        ):
-            continue
-        name_property = Property.root(candidate).get("TableName")
-        if name_property.literal() == name:
-            matches.append((candidate, name_property))
-    return matches[0] if len(matches) == 1 else (None, None)
+    return ctx.named_local(field, DYNAMODB, "TableName")
 
 
 def step_functions_dynamodb(ctx: RuleContext, resource) -> None:

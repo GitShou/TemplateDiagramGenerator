@@ -27,6 +27,8 @@ STATUS = {
 }
 
 VPC = "AWS::EC2::VPC"
+EC2 = "AWS::EC2::Instance"
+ALARM = "AWS::CloudWatch::Alarm"
 SUBNET = "AWS::EC2::Subnet"
 SECURITY_GROUP = "AWS::EC2::SecurityGroup"
 ALB = "AWS::ElasticLoadBalancingV2::LoadBalancer"
@@ -144,6 +146,24 @@ class RuleContext:
         self, prop: Property, types: set[str], attributes: set[str | None]
     ) -> Resource | None:
         return self.match(symbol(prop.value), types, attributes)
+
+    def named_local(
+        self, prop: Property, type_: str, name_field: str
+    ) -> tuple[Resource | None, Property | None]:
+        name = prop.literal()
+        if not isinstance(name, str) or not name:
+            return None, None
+        matches = []
+        for resource in self.resources(type_):
+            if (
+                resource.stack_id != prop.resource.stack_id
+                or resource.condition_state is ConditionState.FALSE
+            ):
+                continue
+            declared = Property.root(resource).get(name_field)
+            if declared.literal() == name:
+                matches.append((resource, declared))
+        return matches[0] if len(matches) == 1 else (None, None)
 
     def issue(self, code: str, message: str, prop: Property) -> None:
         if prop.resource.condition_state is not ConditionState.FALSE:

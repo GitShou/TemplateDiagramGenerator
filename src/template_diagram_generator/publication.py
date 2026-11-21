@@ -2,10 +2,12 @@
 
 import json
 import re
+from collections import Counter
 from dataclasses import asdict, replace
 
 from .architecture import ArchitectureModel
-from .models import PropertyPath, SourceLocation, pointer
+from .localization import diagnostic_text
+from .models import PropertyPath, ReferenceStatus, SourceLocation, pointer
 
 VERSION = "0.2.0"
 _TYPE = re.compile(r"(?:[A-Za-z0-9]{1,64}::){1,2}[A-Za-z0-9]{1,64}\Z")
@@ -22,6 +24,7 @@ _ATTRIBUTES = {
     "ApiId",
     "Arn",
     "CanonicalHostedZoneID",
+    "CidrBlock",
     "DNSName",
     "DistributionDomainName",
     "DistributionHostedZoneId",
@@ -29,9 +32,11 @@ _ATTRIBUTES = {
     "GroupId",
     "IntegrationId",
     "InvokeArn",
+    "Ipv6CidrBlocks",
     "HostedZoneId",
     "ListenerArn",
     "LoadBalancerArn",
+    "QueueName",
     "RegionalDomainName",
     "RegionalHostedZoneId",
     "ResourceId",
@@ -103,6 +108,7 @@ _PATH_KEYS = frozenset(
         "Weight",
         "AwsvpcConfiguration",
         "Fn::And",
+        "Fn::Cidr",
         "Fn::Equals",
         "Fn::FindInMap",
         "Fn::GetAtt",
@@ -110,6 +116,7 @@ _PATH_KEYS = frozenset(
         "Fn::Join",
         "Fn::Not",
         "Fn::Or",
+        "Fn::Select",
         "Fn::Sub",
     ]
 ) | frozenset(
@@ -125,6 +132,25 @@ _PATH_KEYS = frozenset(
         "DNSName",
         "Export",
         "Fn::ImportValue",
+        "ActionsEnabled",
+        "AccountId",
+        "AlarmActions",
+        "CidrBlock",
+        "Dimensions",
+        "Events",
+        "Function",
+        "Globals",
+        "GroupSet",
+        "InsufficientDataActions",
+        "Metric",
+        "Metrics",
+        "MetricStat",
+        "Namespace",
+        "NetworkInterfaces",
+        "OKActions",
+        "Queue",
+        "SecurityGroupIds",
+        "VpcConfig",
         "HostedZoneId",
         "Integration",
         "IntegrationHttpMethod",
@@ -308,7 +334,9 @@ def public_model(model: ArchitectureModel) -> ArchitectureModel:
                 and _HCL_ID.fullmatch(node.type)
                 else "[redacted]",
                 input_type=node.input_type
-                if node.input_type is None or _HCL_ID.fullmatch(node.input_type)
+                if node.input_type is None
+                or _HCL_ID.fullmatch(node.input_type)
+                or _TYPE.fullmatch(node.input_type)
                 else "[redacted]",
                 source=_source(node.source),
             )
@@ -364,15 +392,42 @@ def metadata(model: ArchitectureModel) -> dict:
             stack.id: stack.input_format or "cloudformation" for stack in stacks
         }
         files = {
-            node.source.template for node in model.nodes.values() if node.input_type is not None
+            node.source.template
+            for node in model.nodes.values()
+            if result["input_formats"].get(node.stack_id) == "terraform"
         }
         result["templates"] = sorted(files | set(result["templates"]))
+    if missing := missing_parameters(model):
+        result["missing_parameters"] = missing
     return result
 
 
-def architecture_json(model: ArchitectureModel) -> str:
+def missing_parameters(model: ArchitectureModel) -> dict[str, int]:
+    """Count affected references once per missing parameter, including alias traces."""
+    missing = {
+        item.entity_id
+        for item in model.diagnostics
+        if item.code == "PARAMETER_MISSING" and item.entity_id not in {None, "[redacted]"}
+    }
+    counts = Counter(dict.fromkeys(missing, 0))
+    for ref in model.references.values():
+        if ref.status not in {ReferenceStatus.UNRESOLVED, ReferenceStatus.CONDITIONAL}:
+            continue
+        targets = {ref.direct_target_id}
+        targets.update(
+            model.references[key].direct_target_id for key in ref.trace if key in model.references
+        )
+        counts.update(missing & targets)
+    return dict(sorted(counts.items(), key=lambda item: (-item[1], item[0])))
+
+
+def architecture_json(model: ArchitectureModel, *, diagnostic_locale: str | None = None) -> str:
     content = asdict(model)
     content["metadata"] = metadata(model)
+    if diagnostic_locale is not None:
+        content["metadata"]["diagnostic_locale"] = diagnostic_locale
+        for item, diagnostic in zip(content["diagnostics"], model.diagnostics, strict=True):
+            item["message_localized"] = diagnostic_text(diagnostic_locale, diagnostic)
     for node in content["nodes"].values():
         if node["input_type"] is None:
             del node["input_type"]

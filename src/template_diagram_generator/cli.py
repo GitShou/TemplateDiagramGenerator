@@ -15,7 +15,6 @@ from .publication import VERSION, public_model
 from .renderers import FORMATS, RenderError, render
 from .resolver import ResolveError, resolve
 from .semantics import analyze
-from .terraform import resolve_terraform
 from .views import build_views
 
 
@@ -39,11 +38,15 @@ def _parser() -> argparse.ArgumentParser:
         help="Terraform directory or .tf file, repeatable",
     )
     generate.add_argument("--output", type=Path, help="override the output directory")
+    generate.add_argument("--input-base", type=Path, help="input boundary for direct paths")
     generate.add_argument(
         "--format", choices=FORMATS, action="append", help="override output formats, repeatable"
     )
     generate.add_argument(
         "--locale", choices=REPORT_LOCALES, help="override the report display language"
+    )
+    generate.add_argument(
+        "--localize-json", action="store_true", help="include translated JSON diagnostics"
     )
     generate.add_argument(
         "--fail-on-warning",
@@ -73,6 +76,14 @@ def _resolve_inputs(config) -> ResourceGraph:
     tf = tuple(root for root in config.roots if isinstance(root, TerraformInput))
     if not tf:
         return resolve(cfn, config.resolution)
+    try:
+        from .terraform import resolve_terraform
+    except ModuleNotFoundError as exc:
+        if exc.name not in {"hcl2", "lark"}:
+            raise
+        raise ConfigError(
+            "Terraform input requires pip install 'template-diagram-generator[terraform]'."
+        ) from exc
     terraform = resolve_terraform(tf, config.resolution.input_base)
     if not cfn:
         return terraform
@@ -88,6 +99,10 @@ def _resolve_inputs(config) -> ResourceGraph:
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
+        if args.config and args.input_base is not None:
+            raise ConfigError(
+                "Set input.base_directory in the configuration instead of --input-base."
+            )
         config = (
             load_config(args.config)
             if args.config
@@ -95,6 +110,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.terraform or args.template,
                 Path.cwd(),
                 terraform=args.terraform is not None,
+                input_base=args.input_base,
             )
         )
         if args.output is not None:
@@ -107,7 +123,14 @@ def main(argv: list[str] | None = None) -> int:
         model = public_model(analyze(graph, relationships=config.relationships))
         views = build_views(model, config.view)
         model = replace(model, diagnostics=views.diagnostics)
-        artifacts = render(model, views, config.formats)
+        artifacts = render(
+            model,
+            views,
+            config.formats,
+            diagnostic_locale=views.locale
+            if args.localize_json or config.localize_json_diagnostics
+            else None,
+        )
         _publish(config.directory, artifacts)
     except (ConfigError, ResolveError) as exc:
         _error(str(exc))

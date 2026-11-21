@@ -436,7 +436,7 @@ def test_unknown_transform_marks_declarations_uncertain(tmp_path, write):
         "root.json",
         json.dumps(
             {
-                "Transform": "AWS::Serverless-2016-10-31",
+                "Transform": ["AWS::Serverless-2016-10-31", "ExampleCustomMacro"],
                 "Resources": {"A": {"Type": "AWS::S3::Bucket"}},
             }
         ),

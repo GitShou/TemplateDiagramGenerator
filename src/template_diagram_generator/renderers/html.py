@@ -103,8 +103,12 @@ def _diagrams(
     model: ArchitectureModel,
     locale: str,
     mode: str,
+    note: str = "",
 ) -> str:
-    parts = [f'<section id="{key}"><h2>{title}</h2>', _legend(key == "stacks", pages, locale, mode)]
+    parts = [f'<section id="{key}"><h2>{title}</h2>']
+    if note:
+        parts.append(f'<p class="muted">{note}</p>')
+    parts.append(_legend(key == "stacks", pages, locale, mode))
     if len(pages) > 1:
         parts.append(
             '<div class="pages">'
@@ -199,6 +203,12 @@ def render_html(views: ViewBundle, model: ArchitectureModel, svgs: dict[str, str
         }[mode],
     )
     footer_schema = text("Schema {version}").format(version=model.schema_version)
+    info = metadata(model)
+    overview_note = text(
+        "The overview uses primary resources and flow relationships."
+        if views.overview_selection == "primary"
+        else "The overview uses primary resources and flow relationships, and adds verified associations when there is at most one confirmed flow relationship."
+    )
     navigation = (
         ("overview", "Overview"),
         ("detail", "Detail"),
@@ -222,7 +232,18 @@ def render_html(views: ViewBundle, model: ArchitectureModel, svgs: dict[str, str
         ("detail", "Architecture detail", views.detail),
         ("stacks", hierarchy_title, views.stacks),
     ):
-        parts.append(_diagrams(key, text(title), pages, svgs, model, locale, mode))
+        parts.append(
+            _diagrams(
+                key,
+                text(title),
+                pages,
+                svgs,
+                model,
+                locale,
+                mode,
+                overview_note if key == "overview" else "",
+            )
+        )
     count_format = text("{visible} of {total} resources")
     initial_count = text("{total} resources").format(total=len(views.inventory_ids))
     parts += [
@@ -243,6 +264,12 @@ def render_html(views: ViewBundle, model: ArchitectureModel, svgs: dict[str, str
     parts += [
         f'</tbody></table></div></section><section id="diagnostics"><h2>{text("Diagnostics")}</h2>'
     ]
+    if missing := info.get("missing_parameters"):
+        parts.append(f"<details open><summary>{text('Missing parameter references')}</summary>")
+        parts.append(_table_headers(locale, "Parameter", "Affected references"))
+        for key, count in missing.items():
+            parts.append(f"<tr><td><code>{escape(key)}</code></td><td>{count}</td></tr>")
+        parts.append("</tbody></table></div></details>")
     if views.diagnostics:
         parts.append(_table_headers(locale, "Severity", "Code", "Message", "Source"))
         for diag in views.diagnostics:
@@ -254,7 +281,6 @@ def render_html(views: ViewBundle, model: ArchitectureModel, svgs: dict[str, str
         parts.append("</tbody></table></div>")
     else:
         parts.append(f"<p>{text('No diagnostics.')}</p>")
-    info = metadata(model)
     parts.append(f'</section><section id="inputs"><h2>{input_title}</h2><dl>')
     for key, status in info["stack_status"].items():
         parts.append(

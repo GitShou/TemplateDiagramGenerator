@@ -9,12 +9,20 @@ from .html import render_html
 FORMATS = ("html", "svg", "json", "dot")
 
 
-def render(model: ArchitectureModel, views: ViewBundle, formats: tuple[str, ...]) -> dict[str, str]:
+def render(
+    model: ArchitectureModel,
+    views: ViewBundle,
+    formats: tuple[str, ...],
+    *,
+    diagnostic_locale: str | None = None,
+) -> dict[str, str]:
     if not formats or set(formats) - set(FORMATS):
         raise RenderError("Unknown or missing output format.")
     artifacts = {}
     if "json" in formats:
-        artifacts["architecture.json"] = architecture_json(model)
+        artifacts["architecture.json"] = architecture_json(
+            model, diagnostic_locale=diagnostic_locale
+        )
     if set(formats) & {"html", "svg", "dot"}:
         graphviz = GraphvizRenderer() if set(formats) & {"html", "svg"} else None
         svgs = {}

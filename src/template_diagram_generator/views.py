@@ -9,6 +9,8 @@ from .models import ConditionState, Diagnostic, ReferenceStatus, SourceLocation
 from .semantics.context import stable_id
 
 FLOW = {EdgeKind.TRAFFIC, EdgeKind.DNS, EdgeKind.EVENT, EdgeKind.DATA_ACCESS}
+_SUPPLEMENTAL_KINDS = {EdgeKind.ASSOCIATION, EdgeKind.CONTAINS}
+_MAX_OVERVIEW_SUPPLEMENTS = 12
 _SERVICE_LABELS = {
     "AWS::ApiGatewayV2::Api": "API Gateway",
     "AWS::ApiGatewayV2::Integration": "API integration",
@@ -29,6 +31,7 @@ _SERVICE_LABELS = {
     "AWS::Route53::RecordSetGroup": "Route 53 records",
     "AWS::StepFunctions::StateMachine": "Step Functions",
     "AWS::DynamoDB::Table": "DynamoDB table",
+    "AWS::CloudWatch::Alarm": "CloudWatch alarm",
 }
 
 
@@ -48,6 +51,8 @@ class ViewOptions:
     show_network_boundaries: bool = True
     resources: dict[str, ResourceView] = field(default_factory=dict)
     locale: str = "en"
+    overview_selection: str = "auto"
+    detail_show_conditional: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +108,7 @@ class ViewBundle:
     diagnostics: tuple[Diagnostic, ...]
     inventory_ids: tuple[str, ...]
     locale: str = "en"
+    overview_selection: str = "auto"
 
     def diagrams(self) -> tuple[Diagram, ...]:
         return (*self.overview, *self.detail, *self.stacks)
@@ -141,16 +147,27 @@ def build_views(model: ArchitectureModel, options: ViewOptions = ViewOptions()) 
     locale = options.locale
     if locale not in REPORT_LOCALES:
         raise ValueError("Unsupported report locale.")
+    if options.overview_selection not in {"auto", "primary"}:
+        raise ValueError("Unsupported overview selection.")
     overview_status = {EdgeStatus.CONFIRMED}
     if options.show_conditional:
         overview_status.add(EdgeStatus.CONDITIONAL)
     hidden = {key for key, view in options.resources.items() if view.overview == "hidden"}
     forced = {key for key, view in options.resources.items() if view.overview == "primary"}
     labels = {key: view.label for key, view in options.resources.items() if view.label is not None}
+    overview_states = {ConditionState.TRUE}
+    if options.show_conditional:
+        overview_states.add(ConditionState.UNKNOWN)
+    eligible = {
+        node.id
+        for node in model.nodes.values()
+        if node.id not in hidden and node.state in overview_states
+    }
     overview_edges = [
         edge
         for edge in model.edges
         if edge.kind in FLOW
+        and edge.rule_id != "cloudwatch.alarm_action"
         and edge.status in overview_status
         and edge.source_id not in hidden
         and edge.target_id not in hidden
@@ -158,16 +175,20 @@ def build_views(model: ArchitectureModel, options: ViewOptions = ViewOptions()) 
     primary = {
         node.id
         for node in model.nodes.values()
-        if (node.role is NodeRole.PRIMARY or node.id in forced)
-        and node.id not in hidden
-        and (
-            node.state is ConditionState.TRUE
-            or options.show_conditional
-            and node.state is ConditionState.UNKNOWN
-        )
+        if (node.role is NodeRole.PRIMARY or node.id in forced) and node.id in eligible
     }
     overview_links = _overview_edges(primary, overview_edges)
     overview_ids = primary | {id_ for edge in overview_links for id_ in (edge.start, edge.end)}
+    if (
+        options.overview_selection == "auto"
+        and sum(edge.status is EdgeStatus.CONFIRMED for edge in overview_links) <= 1
+    ):
+        overview_links = _combine(
+            (
+                *overview_links,
+                *_overview_supplements(model, eligible, overview_ids, options.overview_max_nodes),
+            )
+        )
     overview_nodes = {key: _node(model, key, labels, locale) for key in sorted(overview_ids)}
     overview = _pages(
         "overview",
@@ -178,21 +199,26 @@ def build_views(model: ArchitectureModel, options: ViewOptions = ViewOptions()) 
         locale=locale,
     )
 
+    detail_status = {EdgeStatus.CONFIRMED}
+    detail_states = {ConditionState.TRUE}
+    if options.detail_show_conditional:
+        detail_status.add(EdgeStatus.CONDITIONAL)
+        detail_states.add(ConditionState.UNKNOWN)
     detail_edges = [
         edge
         for edge in model.edges
-        if edge.kind is not EdgeKind.DEPENDENCY and edge.status is not EdgeStatus.INACTIVE
+        if edge.kind is not EdgeKind.DEPENDENCY and edge.status in detail_status
     ]
     detail_ids = {
         node.id
         for node in model.nodes.values()
-        if node.role is NodeRole.PRIMARY and node.state is not ConditionState.FALSE
+        if node.role is NodeRole.PRIMARY and node.state in detail_states
     }
     detail_ids.update(id_ for edge in detail_edges for id_ in (edge.source_id, edge.target_id))
     detail_ids.update(
         key
         for key, item in model.containers.items()
-        if item.axis == "network" and item.state is not ConditionState.FALSE
+        if item.axis == "network" and item.state in detail_states
     )
     groups, placement = (
         _network_groups(model, labels, locale) if options.show_network_boundaries else ({}, {})
@@ -277,7 +303,44 @@ def build_views(model: ArchitectureModel, options: ViewOptions = ViewOptions()) 
         (*model.diagnostics, *missing),
         tuple(sorted(model.nodes)),
         locale,
+        options.overview_selection,
     )
+
+
+def _overview_supplements(model, eligible, selected, max_nodes) -> tuple[ViewEdge, ...]:
+    limit = min(max_nodes, _MAX_OVERVIEW_SUPPLEMENTS)
+    initial = frozenset(selected)
+    candidates = [
+        edge
+        for edge in model.edges
+        if edge.status is EdgeStatus.CONFIRMED
+        and edge.source_id in eligible
+        and edge.target_id in eligible
+        and (edge.kind in _SUPPLEMENTAL_KINDS or edge.rule_id == "cloudwatch.alarm_action")
+    ]
+    candidates.sort(
+        key=lambda edge: (
+            -sum(key in initial for key in (edge.source_id, edge.target_id)),
+            edge.rule_id.startswith("cloudwatch."),
+            edge.source_id,
+            edge.target_id,
+            edge.kind,
+            edge.id,
+        )
+    )
+    links = []
+    for edge in candidates:
+        new = {edge.source_id, edge.target_id} - selected
+        if len(selected) - len(initial) + len(new) > limit:
+            continue
+        selected.update(new)
+        links.append(_view_edge(edge))
+        if len(links) == limit:
+            break
+    if not selected:
+        supported = [key for key in sorted(eligible) if model.nodes[key].role is NodeRole.SUPPORT]
+        selected.update(supported[:limit])
+    return tuple(links)
 
 
 def _node(model: ArchitectureModel, key: str, labels: dict[str, str], locale: str) -> ViewNode:

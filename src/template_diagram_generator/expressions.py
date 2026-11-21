@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
 from dataclasses import dataclass, replace
+from itertools import islice
 from typing import Protocol
 
 from .models import (
@@ -20,6 +22,39 @@ from .models import (
 
 _SUB_TOKEN = re.compile(r"\$\{([^{}]+)\}")
 _DYNAMIC_REFERENCE = re.compile(r"\{\{resolve:[^{}]*\}\}")
+
+
+def _integer(value: ResolvedValue) -> int | None:
+    if value.kind is ValueKind.LITERAL:
+        if type(value.value) is int:
+            return value.value
+        if isinstance(value.value, str) and re.fullmatch(r"[0-9]{1,10}", value.value):
+            return int(value.value)
+    return None
+
+
+def _cidr_blocks(
+    block: ResolvedValue, count: int | None, bits: int | None
+) -> tuple[str, ...] | None:
+    if (
+        block.kind is not ValueKind.LITERAL
+        or not isinstance(block.value, str)
+        or "/" not in block.value
+        or count is None
+        or not 1 <= count <= 256
+        or bits is None
+    ):
+        return None
+    try:
+        network = ipaddress.ip_network(block.value)
+    except ValueError:
+        return None
+    prefix = network.max_prefixlen - bits
+    if not network.prefixlen <= prefix <= network.max_prefixlen or count > 1 << (
+        prefix - network.prefixlen
+    ):
+        return None
+    return tuple(str(subnet) for subnet in islice(network.subnets(new_prefix=prefix), count))
 
 
 @dataclass(frozen=True, slots=True)
@@ -170,6 +205,8 @@ class ExpressionEvaluator:
             return self._if(arg, site, source)
         if key == "Fn::FindInMap":
             return self._find_in_map(arg, site, source)
+        if key in {"Fn::Cidr", "Fn::Select"}:
+            return self._address_or_select(key, arg, site, source)
         if key in {"Fn::Equals", "Fn::And", "Fn::Or", "Fn::Not"}:
             return self._boolean(key, arg, site, source)
         self.scope.issue(
@@ -194,6 +231,66 @@ class ExpressionEvaluator:
             "INVALID_INTRINSIC", "Unexpected intrinsic function arguments.", site, source
         )
         return ResolvedValue(ValueKind.UNKNOWN, state=site.state, reason="INVALID_INTRINSIC")
+
+    def _address_or_select(
+        self, key: str, arg: AstNode, site: EvaluationSite, source: SourceLocation
+    ) -> ResolvedValue:
+        args = arg.sequence()
+        expected = 3 if key == "Fn::Cidr" else 2
+        if args is None or len(args) != expected:
+            return self._invalid(site, source)
+        values = tuple(self.evaluate(item, site.child(key, i)) for i, item in enumerate(args))
+        refs = references(values)
+        state = conjunction(site.state, *(value.state for value in values))
+        for kind in (
+            ValueKind.REDACTED,
+            ValueKind.UNKNOWN,
+            ValueKind.RESOURCE_ATTRIBUTE,
+            ValueKind.COMPOSITE,
+        ):
+            if operand := next((value for value in values if value.kind is kind), None):
+                result_kind = (
+                    ValueKind.REDACTED if kind is ValueKind.REDACTED else ValueKind.UNKNOWN
+                )
+                return ResolvedValue(
+                    result_kind, state=state, reference_ids=refs, reason=operand.reason
+                )
+        if key == "Fn::Select":
+            index, items = _integer(values[0]), values[1]
+            if (
+                index is not None
+                and items.kind is ValueKind.ARRAY
+                and 0 <= index < len(items.value)
+            ):
+                item = items.value[index]
+                if any(
+                    entry.state is ConditionState.UNKNOWN
+                    and entry.kind in {ValueKind.UNKNOWN, ValueKind.REDACTED}
+                    for entry in items.value[:index]
+                ):
+                    # An earlier branch could remove an entry with AWS::NoValue.
+                    return ResolvedValue(
+                        ValueKind.UNKNOWN,
+                        state=ConditionState.UNKNOWN,
+                        reference_ids=refs,
+                        reason="CONDITIONAL_EXPRESSION",
+                    )
+                if all(
+                    entry.kind is not ValueKind.LITERAL or entry.value is not None
+                    for entry in items.value
+                ):
+                    proof = (
+                        (values[0], items, item)
+                        if args[1].sequence() is None
+                        else (values[0], item)
+                    )
+                    return replace(
+                        item, state=conjunction(state, item.state), reference_ids=references(proof)
+                    )
+        elif blocks := _cidr_blocks(values[0], _integer(values[1]), _integer(values[2])):
+            items = tuple(literal(block, state) for block in blocks)
+            return ResolvedValue(ValueKind.ARRAY, items, state, refs)
+        return replace(self._invalid(site, source), reference_ids=refs)
 
     def _lookup(
         self, key: str, arg: AstNode, site: EvaluationSite, source: SourceLocation

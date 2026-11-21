@@ -23,9 +23,12 @@ template-diagram generate --config examples/diagram.yaml --fail-on-warning
 template-diagram generate --template templates/root.yaml --output diagrams --format json --format dot
 ```
 
+`--template` は作業ディレクトリからの相対パスと絶対パスを受け付けます。作業ディレクトリ外のテンプレートを指定し、それらが同じディレクトリにあれば、そのディレクトリを入力ベースにします。異なる場所にあるルートや兄弟ディレクトリの子スタックも読む場合は、共通の入力ベースを `--input-base` で指定します。ルートも子スタックも、実パスが入力ベース内に収まる必要があります。
+
 ### Terraform の静的解析
 
 ```powershell
+python -m pip install '.[terraform]'
 template-diagram generate --terraform path/to/module --locale ja
 template-diagram generate --config examples/terraform/diagram.yaml --fail-on-warning
 ```
@@ -65,22 +68,27 @@ input:
 views:
   locale: ja
   overview:
+    selection: auto
     max_nodes: 20
     direction: LR
     show_conditional: false
   detail:
     max_nodes: 40
     show_network_boundaries: true
+    show_conditional: true
 output:
   directory: diagram-output
   formats: [html, svg, json, dot]
+  localize_json_diagnostics: true
 ```
 
 - `input.base_directory` と `output.directory` は設定ファイルからの相対パスです。`template` と `nested_stack_paths` の値は入力ベースからの相対パスです。CLI で指定する `--template` と `--output` は作業ディレクトリを基準にします。
 - `nested_stack_paths` は `ルートID/子スタックのLogical ID` を指定します。多段の子はさらに `/LogicalId` を続けます。マッピングがない場合、ローカル相対パスの `TemplateURL` を親テンプレートから解決します。S3 や HTTP の URL を使う子は、ローカルコピーをマッピングしてください。入力の実パスは入力ベース内に収めます。
 - `--output` と複数指定できる `--format` は設定を上書きします。出力先には実行専用のディレクトリを使うと、ページ数が減った際に前回の SVG・DOT を静的公開物へ混ぜずに済みます。
-- `views.locale` に `ja` を指定すると、HTML の見出し・検索・診断と、SVG・DOT の凡例に対応する図中ラベルを日本語で表示します。既定は `en` です。`--locale ja` または `--locale en` で設定を上書きできます。Logical ID、リソース型、操作名、JSON の値はどちらの言語でも共通です。
+- `views.locale` に `ja` を指定すると、HTML の見出し・検索・診断と、SVG・DOT の凡例に対応する図中ラベルを日本語で表示します。既定は `en` です。`--locale ja` または `--locale en` で設定を上書きできます。`output.localize_json_diagnostics: true` または `--localize-json` を指定すると、JSON の診断にも選択した言語の `message_localized` が加わります。既存の `code` と `message` は自動処理向けに維持します。
 - 概要・詳細のページ上限は実リソース数です。別ページへの接続は概要・詳細・スタック図のリンク一覧で追えます。`direction` は `LR` または `TB` です。
+- 概要の既定 `selection: auto` は、主要なサービスと通信・イベントなどの関係を表示します。確定した接続が1本以下の場合は、確認できたアタッチメント、包含、監視の関係を最大12本、追加ノードを最大12件補足します。表示枠がより小さい場合はその上限に合わせます。主要ノードも接続もない場合は、対応する補助リソースを同じ上限で表示します。`selection: primary` で主要ノードとフローに絞れます。`views.resources` で表示を調整できます。
+- ルートのパラメータは `input.roots[].parameters` の設定値を優先し、なければテンプレートの `Default` を使います。未指定パラメータごとの影響は、HTML の診断欄と JSON の `metadata.missing_parameters` で確認できます。件数は、そのパラメータを直接参照するか、参照をたどると到達する未解決・条件付きの式の数です。
 
 ### 独立スタックの参照と図の調整
 
@@ -123,16 +131,22 @@ relationships:
 | CloudFront のオリジングループ | キャッシュビヘイビアが選んだグループ、メンバー順、HTTP フェイルオーバー条件。主オリジンとフェイルオーバー先を区別 |
 | HTTP API → Lambda | 同じ API に属する Route と Integration、Lambda ARN を指す `AWS_PROXY` の URI |
 | REST API → Lambda | 同じ REST API に属する Method と Resource、POST の Lambda 呼び出し URI |
+| SAM の API → Lambda、SQS / S3 → Lambda | `AWS::Serverless::Function` の `Events` と、同じ入力内で参照された API・キュー・バケット |
 | ALB → ECS | Listener、forward action、Target Group、ECS の `LoadBalancers` |
 | EventBridge → SQS / Lambda、SQS → Lambda | Rule のターゲットと Event Source Mapping |
 | EventBridge Scheduler → Lambda / SQS / Step Functions / SNS / EventBridge バス | `Target.Arn` と対応する入力内のリソース。無効なスケジュールの関係は JSON で `inactive` として保持 |
 | Route 53 → CloudFront / ELBv2 / API Gateway カスタムドメイン | A／AAAA Alias の `DNSName` と一致する `HostedZoneId`。図は `DNS alias`、JSON は `DNS` と表示 |
 | Step Functions → DynamoDB | インライン定義の `GetItem`、`PutItem`、`UpdateItem`、`DeleteItem` と特定できるテーブル。操作は `operation` に記録 |
-| VPC / Subnet | `VpcId`、ロードバランサーと ECS のサブネット指定、RDS サブネットグループ |
+| VPC / Subnet / セキュリティグループ | `VpcId`、ロードバランサーと ECS のサブネット、RDS サブネットグループ、Lambda の `VpcConfig`、EC2 のネットワーク設定 |
+| CloudWatch アラーム | メトリクスの名前空間・ディメンションによる Lambda、EC2、SQS、RDS、DynamoDB との関連。アラーム状態に応じた SNS・Lambda のアクション |
 
 `architecture.json` にはスキーマ版、リソース、根拠付きの関係、スタックとネットワークの所属、CloudFormation 参照、診断が含まれます。`confirmed` はテンプレート上で特定できた構成、`conditional` は条件付き、`inactive` は無効な構成です。`Ref`、`GetAtt`、`DependsOn` は構築上の依存として保持します。実際の通信にはサービス固有の根拠が必要です。
 
 条件付きリソース、未知型、外部の子テンプレート、未対応 intrinsic は一覧や診断で確認できます。REST API は `AWS::ApiGateway::Method` とローカルの Lambda 関数をたどる形式が対象です。Step Functions は `Definition` と JSON の `DefinitionString` を扱い、DynamoDB のテーブルはリソース参照か同一スタック内で一意な明示 `TableName` から特定します。S3 にある定義、実行時に決まるテーブル、タスクの `Credentials` が指定されたデータアクセスは診断に出ます。 [REST API の Integration](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-properties-apigateway-method-integration.html) · [Route 53 の AliasTarget](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/aws-properties-route53-recordset-aliastarget.html) · [Step Functions の DynamoDB 統合](https://docs.aws.amazon.com/step-functions/latest/dg/connect-ddb.html)
+
+SAM テンプレートでは `Function`、`Api`、`HttpApi` と `Globals` の対応プロパティを静的に読み取ります。元のリソース型は JSON の `input_type` と HTML のリソース一覧で追えます。SAM が暗黙に作る API、IAM ロール、デプロイなどの生成リソースを含む構成には、変換済みテンプレートを使用してください。 [SAM の Globals](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-specification-template-anatomy-globals.html) · [SAM のイベントソース](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/sam-property-function-eventsource.html)
+
+`Fn::Cidr` は静的に確定する IPv4・IPv6 のアドレス範囲を分割し、`Fn::Select` で結果から選べます。明示された `CidrBlock` を持つ VPC の `GetAtt` も使えます。実行時に割り当てられる CIDR は未確定です。`Fn::If` は条件が未確定なら両分岐を条件付きとして記録します。図を確定した関係に絞るには `views.overview.show_conditional` と `views.detail.show_conditional` を `false` にします。 [Fn::Cidr の仕様](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/intrinsic-function-reference-cidr.html) · [Fn::Select の仕様](https://docs.aws.amazon.com/AWSCloudFormation/latest/TemplateReference/intrinsic-function-reference-select.html)
 
 CloudFront のグループは既定のオリジン優先順位と、入力内で特定できる接続先を扱います。Scheduler の汎用 AWS SDK ターゲットや実環境由来の ARN は診断に残します。 [CloudFront のオリジンフェイルオーバー](https://docs.aws.amazon.com/AmazonCloudFront/latest/DeveloperGuide/high_availability_origin_failover.html) · [Scheduler のテンプレート化されたターゲット](https://docs.aws.amazon.com/scheduler/latest/UserGuide/managing-targets-templated.html)
 
